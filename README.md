@@ -4,5 +4,4 @@
 
 Go SELinux label translation client.
 
-This package connects to and interactions with mcstransd. 
-
+This package connects to and interacts with mcstransd to get SELinux label and color translations.
