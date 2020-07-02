@@ -127,8 +127,6 @@ func (c *Conn) rawToTrans(raw string) (string, error) {
 	return c.makeRequest(raw, reqRawToTrans)
 }
 
-// RawToColor accepts a raw SELinux label and returns
-// the color of the context from mcstransd
 func (c *Conn) rawToColor(raw string) (string, error) {
 	return c.makeRequest(raw, reqRawToColor)
 }
