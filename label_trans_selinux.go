@@ -1,188 +1,134 @@
 // +build selinux,linux
 
-package labeltrans
+package setrans
 
 import (
+	"context"
 	"fmt"
-	"github.com/jbrindle/vectorio"
 	"net"
+	"strings"
 	"syscall"
+	"time"
 	"unsafe"
+
+	"github.com/jbrindle/vectorio"
 )
 
 var sockpath = "/var/run/setrans/.setrans-unix"
 
-type RequestType uint32
+const timeout = time.Second * 3
 
-const (
-	ReqRawToTrans RequestType = 2
-	ReqTransToRaw RequestType = 3
-	ReqRawToColor RequestType = 4
-)
+const nullChar = "\000"
 
-type reply struct {
-	label string
-	err error
-}
+func sendRequest(conn net.Conn, t requestType, data string) (string, error) {
+	c, ok := conn.(*net.UnixConn)
+	if !ok {
+		return "", fmt.Errorf("%T is not a unix connection", conn)
+	}
 
-type request struct {
-	label   string
-	reqType RequestType
-	res     chan<- reply
-}
+	// mcstransd expects null terminated strings
+	data += nullChar
+	dataSize := uint32(len(data))
 
-var reqchan chan request
-var active bool = true
-var done bool = false
+	data2Size := uint32(len(nullChar)) // unused by libselinux users
 
-func sendRequest(c *net.UnixConn, t RequestType, data string) (resp string, Err error) {
-	// mcstransd expects null terminated strings which go does not do, so we append nulls here
-	d := data + "\000"
-	data_size := uint32(len(d))
+	d1 := []byte(data)
+	d2 := []byte(nullChar)
 
-	data2 := "\000" // unused by libselinux users
-	data2_size := uint32(len(data2))
+	v := []syscall.Iovec{
+		{Base: (*byte)(unsafe.Pointer(&t)), Len: uint64(unsafe.Sizeof(t))},
+		{Base: (*byte)(unsafe.Pointer(&dataSize)), Len: uint64(unsafe.Sizeof(dataSize))},
+		{Base: (*byte)(unsafe.Pointer(&data2Size)), Len: uint64(unsafe.Sizeof(data2Size))},
+		{Base: (*byte)(unsafe.Pointer(&d1[0])), Len: uint64(dataSize)},
+		{Base: (*byte)(unsafe.Pointer(&d2[0])), Len: uint64(data2Size)},
+	}
 
-	v := make([]syscall.Iovec, 5)
-
-	d1 := []byte(d)
-	d2 := []byte(data2)
-
-	v[0] = syscall.Iovec{Base: (*byte)(unsafe.Pointer(&t)), Len: uint64(unsafe.Sizeof(t))}
-	v[1] = syscall.Iovec{Base: (*byte)(unsafe.Pointer(&data_size)), Len: uint64(unsafe.Sizeof(data_size))}
-	v[2] = syscall.Iovec{Base: (*byte)(unsafe.Pointer(&data2_size)), Len: uint64(unsafe.Sizeof(data2_size))}
-	v[3] = syscall.Iovec{Base: (*byte)(unsafe.Pointer(&d1[0])), Len: uint64(data_size)}
-	v[4] = syscall.Iovec{Base: (*byte)(unsafe.Pointer(&d2[0])), Len: uint64(data2_size)}
-
-	f, _ := c.File()
+	f, err := c.File()
+	if err != nil {
+		return "", fmt.Errorf("failed to create file from UDS: %w", err)
+	}
 	defer f.Close()
-	_, err := vectorio.WritevRaw(f.Fd(), v)
-	if err != nil {
-		// We are not going to receive anything if the write failed
-		return "", err
+
+	if _, err := vectorio.WritevRaw(f.Fd(), v); err != nil {
+		return "", fmt.Errorf("failed to write to mcstransd: %w", err)
 	}
 
-	hdr := make([]syscall.Iovec, 3)
+	var uintsize uint32
+	elemsize := uint64(unsafe.Sizeof(uintsize))
 
-	var elem uint32
-	elemsize := uint64(unsafe.Sizeof(elem))
-
-	hdr[0].Len = elemsize   // function
-	hdr[1].Len = elemsize   // response length
-	hdr[2].Len = elemsize   // return value
-
-	len, err := vectorio.ReadvRaw(f.Fd(), hdr)
-	if err != nil {
-		// If the first read failed we will not know how long the response is
-		return "", err
+	header := []syscall.Iovec{
+		{Len: elemsize}, // function
+		{Len: elemsize}, // response length
+		{Len: elemsize}, // return value
 	}
 
-	fmt.Printf("Function: %d size: %d ret: %d and bytes recv: %d\n", *hdr[0].Base, *hdr[1].Base, *hdr[2].Base, len)
+	if _, err := vectorio.ReadvRaw(f.Fd(), header); err != nil {
+		return "", fmt.Errorf("failed to read from mcstransd: %w", err)
+	}
 
-	respvec := make([]syscall.Iovec, 1)
-	respvec[0].Len = uint64(*hdr[1].Base)
-
-	len, err = vectorio.ReadvRaw(f.Fd(), respvec)
+	respvec := []syscall.Iovec{{Len: uint64(*header[1].Base)}}
+	_, err = vectorio.ReadvRaw(f.Fd(), respvec)
 	if err != nil {
-		fmt.Println(err)
+		return "", fmt.Errorf("failed to read from response: %w", err)
 	}
 
 	b := *(*[]byte)(unsafe.Pointer(&respvec[0].Base))
-	resp = string(b[:len - 1]) // mcstransd adds a null to the end, remove it
+	if len(b) <= len(nullChar) {
+		return "", fmt.Errorf("failed to read from response")
+	}
 
-	fmt.Printf("Response: %q and bytes recv: %d\n", resp, len)
-
-	return resp, nil
+	str := strings.Trim(string(b), nullChar)
+	return strings.TrimSpace(str), nil
 }
 
-func connect() (c *net.UnixConn, err error) {
-	c, err = net.DialUnix("unix", nil, &net.UnixAddr{Name: sockpath, Net: "unix"})
-	if err != nil {
-		// mcstrans is not running or we cannot connect for some reason, set the flag and return
-		return nil, err
-	}
-	return
-}
-
-func manager() {
-	c, _ := connect()
-	if c == nil {
-		done = true
-		active = false
-		return
-	}
-	defer c.Close()
-	reqchan = make(chan request)
-	done = true
-	fmt.Println("Ready to recieve requests")
-	for {
-		select {
-		case req := <-reqchan:
-			fmt.Printf("Got request %s\n", req.label)
-			res, err := sendRequest(c, req.reqType, req.label)
-			if err != nil {
-				fmt.Println(err)
-				// let us try to reconnect once and try again before bailing
-				c, err  = connect()
-				defer c.Close()
-				if err != nil {
-					// still down		
-					fmt.Println(err)
-					active = false
-					req.res <- reply{label:"", err:err}
-					break
-				}
-				res, err = sendRequest(c, req.reqType, req.label)
-				if err != nil {
-					fmt.Println(err)
-					active = false
-					req.res <- reply{label:"", err:err}
-				}
-			}
-			req.res <- reply{label:res, err:err}
+func (c *Conn) makeRequest(con string, t requestType) (string, error) {
+	go func(msg setransMsg) {
+		response, err := sendRequest(c.conn, msg.reqType, msg.label)
+		if err != nil {
+			c.errch <- fmt.Errorf("failed to send initial request %v: %w", msg, err)
 		}
+		c.mcstransch <- setransMsg{label: response}
+	}(setransMsg{reqType: t, label: con})
+
+	select {
+	case err := <-c.errch:
+		return "", err
+	case req := <-c.mcstransch:
+		return req.label, nil
 	}
 }
 
-func makeRequest(con string, t RequestType) (con2 string, Err error) {
-	if reqchan == nil {
-		go manager()
-		// wait until we are connected to continue
-		for
+func new() (*Conn, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "unix", sockpath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to dial mcstransd: %w", err)
 	}
-	if active == false {
-		fmt.Printf("returning %s due to inactive server\n", con)
-		return con, nil
-	}
 
-
-	reschan := make(chan reply)
-	translated := request{con, t, reschan}
-	reqchan <- translated
-
-	var resp reply
-	resp = <-reschan
-
-	con2 = resp.label
-	Err = resp.err
-
-	fmt.Printf("Got back %s\n", con2)
-	return
-
+	return &Conn{
+		conn:       conn,
+		mcstransch: make(chan setransMsg),
+		errch:      make(chan error),
+	}, nil
 }
 
-func TransToRaw(trans string) (raw string, Err error) {
-	raw, Err = makeRequest(trans, ReqTransToRaw)
-	return
+func (c *Conn) close() error {
+	return c.conn.Close()
 }
 
-func RawToTrans(raw string) (trans string, Err error) {
-	trans, Err = makeRequest(raw, ReqRawToTrans)
-	return
+func (c *Conn) transToRaw(trans string) (string, error) {
+	return c.makeRequest(trans, reqTransToRaw)
 }
 
-func RawToColor(raw string) (color string, Err error) {
-	color, Err = makeRequest(raw, ReqRawToColor)
-	return
+func (c *Conn) rawToTrans(raw string) (string, error) {
+	return c.makeRequest(raw, reqRawToTrans)
 }
 
+// RawToColor accepts a raw SELinux label and returns
+// the color of the context from mcstransd
+func (c *Conn) rawToColor(raw string) (string, error) {
+	return c.makeRequest(raw, reqRawToColor)
+}
