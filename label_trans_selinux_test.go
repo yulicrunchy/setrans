@@ -107,3 +107,19 @@ func TestTranslation(t *testing.T) {
 		}
 	})
 }
+
+func BenchmarkTranslation(b *testing.B) {
+	input := "staff_u:staff_r:staff_t:SystemLow-SystemHigh"
+
+	conn, err := New()
+	if err != nil {
+		b.Fatalf("failed to connect to mcstrans: %q", err)
+	}
+	defer conn.Close()
+
+	for n := 0; n < b.N; n++ {
+		if _, err := conn.TransToRaw(input); err != nil {
+			b.Fatalf("failed to translate to raw: %v", err)
+		}
+	}
+}
