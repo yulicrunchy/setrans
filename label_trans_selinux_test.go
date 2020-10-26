@@ -18,6 +18,8 @@ func check(t *testing.T, err error, wanterr, got, want string) {
 			t.Fatalf("got error %q does not match expected err %q", err, wanterr)
 		}
 		return
+	} else if wanterr != "" {
+		t.Fatalf("expected err %q but actual err was nil", wanterr)
 	}
 
 	if got != want {
