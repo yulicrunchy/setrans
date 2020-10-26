@@ -1,7 +1,10 @@
-// Package setrans provides a mechanism for translating contexts using mcstransd
+// Package setrans provides a mechanism for translating contexts using mcstransd.
 package setrans
 
-import "net"
+import (
+	"errors"
+	"net"
+)
 
 type requestType uint32
 
@@ -9,6 +12,11 @@ const (
 	reqRawToTrans requestType = 2
 	reqTransToRaw requestType = 3
 	reqRawToColor requestType = 4
+)
+
+var (
+	// ErrInvalidLevel is returned if a context cannot be translated because it has an invalid level.
+	ErrInvalidLevel = errors.New("invalid level provided")
 )
 
 type setransMsg struct {

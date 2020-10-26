@@ -94,6 +94,10 @@ func (c *Conn) makeRequest(con string, t requestType) (string, error) {
 	case err := <-c.errch:
 		return "", err
 	case req := <-c.mcstransch:
+		if con == req.label {
+			return "", ErrInvalidLevel
+		}
+
 		return req.label, nil
 	}
 }

@@ -39,8 +39,8 @@ func TestTranslation(t *testing.T) {
 			},
 			{
 				orig: "staff_u:staff_r:staff_t:FooLow-FooHigh",
-				want: "staff_u:staff_r:staff_t:FooLow-FooHigh",
-				name: "test an invalid original context to TransToRaw",
+				name: "invalid level not in setrans configuration to TransToRaw should fail",
+				err:  ErrInvalidLevel.Error(),
 			},
 			{
 				orig: "FooLow-FooHigh",
@@ -92,6 +92,11 @@ func TestTranslation(t *testing.T) {
 				orig: "staff_u:staff_r:staff_t:s0-s15:c0.c1023",
 				want: "staff_u:staff_r:staff_t:SystemLow-SystemHigh",
 				name: "test a valid RawToTrans",
+			},
+			{
+				orig: "staff_u:staff_r:staff_t:x0-x15",
+				name: "test invalid level",
+				err:  ErrInvalidLevel.Error(),
 			},
 		}
 
