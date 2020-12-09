@@ -3,7 +3,6 @@
 package setrans
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 )
@@ -34,14 +33,19 @@ func TestTranslation(t *testing.T) {
 			orig, want, err, name string
 		}{
 			{
-				orig: "dbclient_u:dbclient_r:dbclient_t:T REL TO USA",
-				want: "staff_u:staff_r:staff_t:s0-s15:c0.c1023",
-				name: "test a valid TransToRaw",
+				orig: "staff_u:staff_r:staff_t:T REL TO USA",
+				want: "staff_u:staff_r:staff_t:s6:c0,c2,c11,c201.c429,c431.c511",
+				name: "valid TransToRaw single country",
 			},
 			{
-				orig: "dbclient_u:dbclient_r:dbclient_t:T REL TO NATO",
-				want: "staff_u:staff_r:staff_t:s0-s15:c0.c1023",
-				name: "test a valid TransToRaw",
+				orig: "staff_u:staff_r:staff_t:T REL TO NATO",
+				want: "staff_u:staff_r:staff_t:s6:c0,c2,c11,c201.c204,c206.c218,c220.c222,c224.c238,c240.c256,c259,c260,c262.c267,c270.c273,c275.c277,c279.c287,c289.c297,c299,c301.c307,c309,c311.c330,c334.c364,c367.c377,c379,c380,c382.c386,c388.c405,c408.c422,c424.c429,c431.c511",
+				name: "valid TransToRaw group of countries",
+			},
+			{
+				orig: "staff_u:staff_r:staff_t:FooLow-FooHigh",
+				want: "staff_u:staff_r:staff_t:FooLow-FooHigh",
+				name: "invalid original context to TransToRaw",
 			},
 		}
 
@@ -52,9 +56,10 @@ func TestTranslation(t *testing.T) {
 		defer conn.Close()
 
 		for _, tt := range tests {
-			t, _ := conn.TransToRaw(tt.orig)
-			fmt.Println(t)
-			//check(t, err, tt.err, got, tt.want)
+			t.Run(tt.name, func(t *testing.T) {
+				got, err := conn.TransToRaw(tt.orig)
+				check(t, err, tt.err, got, tt.want)
+			})
 		}
 	})
 
