@@ -4,14 +4,12 @@ package setrans
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"strings"
-	"syscall"
 	"time"
 	"unsafe"
-
-	"github.com/jbrindle/vectorio"
 )
 
 var sockpath = "/var/run/setrans/.setrans-unix"
@@ -20,10 +18,30 @@ const timeout = time.Second * 3
 
 const nullChar = "\000"
 
-func sendRequest(conn net.Conn, t requestType, data string) (string, error) {
-	c, ok := conn.(*net.UnixConn)
+// getNativeEndian is a cursed function and I hate it.
+// The Go developers have decided that machine byteorder is an unimportant
+// detail and 1) force you to specify order when decoding byte arrays, and
+// 2) don't give you a simple way of figuring out the native endianness
+// so here we go. Create a pointer and then look at the byte order to set
+// the interface for reading off of the socket.
+func getNativeEndian() (binary.ByteOrder, error) {
+	buf := [2]byte{}
+	*(*uint16)(unsafe.Pointer(&buf[0])) = uint16(0xABCD)
+
+	switch buf {
+	case [2]byte{0xCD, 0xAB}:
+		return binary.LittleEndian, nil
+	case [2]byte{0xAB, 0xCD}:
+		return binary.BigEndian, nil
+	default:
+		return nil, fmt.Errorf("Could not determine native endianness.")
+	}
+}
+
+func (c *Conn) sendRequest(t requestType, data string) (string, error) {
+	con, ok := c.conn.(*net.UnixConn)
 	if !ok {
-		return "", fmt.Errorf("%T is not a unix connection", conn)
+		return "", fmt.Errorf("%T is not a unix connection", c.conn)
 	}
 
 	// mcstransd expects null terminated strings
@@ -32,58 +50,48 @@ func sendRequest(conn net.Conn, t requestType, data string) (string, error) {
 
 	data2Size := uint32(len(nullChar)) // unused by libselinux users
 
-	d1 := []byte(data)
 	d2 := []byte(nullChar)
 
-	v := []syscall.Iovec{
-		{Base: (*byte)(unsafe.Pointer(&t)), Len: uint64(unsafe.Sizeof(t))},
-		{Base: (*byte)(unsafe.Pointer(&dataSize)), Len: uint64(unsafe.Sizeof(dataSize))},
-		{Base: (*byte)(unsafe.Pointer(&data2Size)), Len: uint64(unsafe.Sizeof(data2Size))},
-		{Base: (*byte)(unsafe.Pointer(&d1[0])), Len: uint64(dataSize)},
-		{Base: (*byte)(unsafe.Pointer(&d2[0])), Len: uint64(data2Size)},
+	v := [][]byte{
+		(*[4]byte)(unsafe.Pointer(&t))[:],
+		(*[4]byte)(unsafe.Pointer(&dataSize))[:],
+		(*[4]byte)(unsafe.Pointer(&data2Size))[:],
+		[]byte(data),
+		[]byte(d2),
 	}
 
-	f, err := c.File()
-	if err != nil {
-		return "", fmt.Errorf("failed to create file from UDS: %w", err)
-	}
-	defer f.Close()
-
-	if _, err := vectorio.WritevRaw(f.Fd(), v); err != nil {
+	writer := net.Buffers(v)
+	if _, err := writer.WriteTo(con); err != nil {
 		return "", fmt.Errorf("failed to write to mcstransd: %w", err)
 	}
 
 	var uintsize uint32
-	elemsize := uint64(unsafe.Sizeof(uintsize))
 
-	header := []syscall.Iovec{
-		{Len: elemsize}, // function
-		{Len: elemsize}, // response length
-		{Len: elemsize}, // return value
-	}
-
-	if _, err := vectorio.ReadvRaw(f.Fd(), header); err != nil {
+	var hdr [unsafe.Sizeof(uintsize) * 3]byte
+	_, err := con.Read(hdr[0:])
+	if err != nil {
 		return "", fmt.Errorf("failed to read from mcstransd: %w", err)
 	}
 
-	respvec := []syscall.Iovec{{Len: uint64(*header[1].Base)}}
-	_, err = vectorio.ReadvRaw(f.Fd(), respvec)
+	// the hdr buffer contains the following structure:
+	// function: 0-4
+	// response length: 4-8
+	// return code: 8-12
+	responselen := c.nativeEndian.Uint32(hdr[4:8])
+
+	response := make([]byte, responselen)
+	_, err = con.Read(response[0:])
 	if err != nil {
-		return "", fmt.Errorf("failed to read from response: %w", err)
+		return "", fmt.Errorf("failed to read from mcstransd: %w", err)
 	}
 
-	b := *(*[]byte)(unsafe.Pointer(&respvec[0].Base))
-	if len(b) <= len(nullChar) {
-		return "", fmt.Errorf("failed to read from response")
-	}
-
-	str := strings.Trim(string(b), nullChar)
+	str := strings.Trim(string(response), nullChar)
 	return strings.TrimSpace(str), nil
 }
 
 func (c *Conn) makeRequest(con string, t requestType) (string, error) {
 	go func(msg setransMsg) {
-		response, err := sendRequest(c.conn, msg.reqType, msg.label)
+		response, err := c.sendRequest(msg.reqType, msg.label)
 		if err != nil {
 			c.errch <- fmt.Errorf("failed to send initial request %v: %w", msg, err)
 		}
@@ -108,10 +116,16 @@ func new() (*Conn, error) {
 		return nil, fmt.Errorf("failed to dial mcstransd: %w", err)
 	}
 
+	ne, err := getNativeEndian()
+	if err != nil {
+		return nil, err
+	}
+
 	return &Conn{
-		conn:       conn,
-		mcstransch: make(chan setransMsg),
-		errch:      make(chan error),
+		conn:         conn,
+		mcstransch:   make(chan setransMsg),
+		errch:        make(chan error),
+		nativeEndian: ne,
 	}, nil
 }
 

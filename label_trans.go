@@ -1,7 +1,10 @@
 // Package setrans provides a mechanism for translating contexts using mcstransd
 package setrans
 
-import "net"
+import (
+	"encoding/binary"
+	"net"
+)
 
 type requestType uint32
 
@@ -19,9 +22,10 @@ type setransMsg struct {
 // Conn is used to keep an setrans connection open to the
 // mcstrans socket
 type Conn struct {
-	conn       net.Conn
-	mcstransch chan setransMsg
-	errch      chan error
+	conn         net.Conn
+	mcstransch   chan setransMsg
+	errch        chan error
+	nativeEndian binary.ByteOrder
 }
 
 // New creates a new connection to mcstransd
