@@ -4,14 +4,12 @@ package setrans
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"strings"
-	"syscall"
 	"time"
 	"unsafe"
-
-	"github.com/jbrindle/vectorio"
 )
 
 var sockpath = "/var/run/setrans/.setrans-unix"
@@ -19,6 +17,28 @@ var sockpath = "/var/run/setrans/.setrans-unix"
 const timeout = time.Second * 3
 
 const nullChar = "\000"
+
+/* This is a cursed function and I hate it.
+ * The Go devlopers have decided that machine byteorder is an unimportant detail
+ * and 1) force you to specify order when decoding byte arrays, and
+ * 2) don't give you a simple way of figuring out the native endianness
+ * so here we go. Create a pointer and then look at the byte order to set
+ * the interface for reading off of the socket. */
+var nativeEndian binary.ByteOrder
+
+func setNativeEndian() {
+	buf := [2]byte{}
+	*(*uint16)(unsafe.Pointer(&buf[0])) = uint16(0xABCD)
+
+	switch buf {
+	case [2]byte{0xCD, 0xAB}:
+		nativeEndian = binary.LittleEndian
+	case [2]byte{0xAB, 0xCD}:
+		nativeEndian = binary.BigEndian
+	default:
+		panic("Could not determine native endianness.")
+	}
+}
 
 func sendRequest(conn net.Conn, t requestType, data string) (string, error) {
 	c, ok := conn.(*net.UnixConn)
@@ -32,15 +52,14 @@ func sendRequest(conn net.Conn, t requestType, data string) (string, error) {
 
 	data2Size := uint32(len(nullChar)) // unused by libselinux users
 
-	d1 := []byte(data)
 	d2 := []byte(nullChar)
 
-	v := []syscall.Iovec{
-		{Base: (*byte)(unsafe.Pointer(&t)), Len: uint64(unsafe.Sizeof(t))},
-		{Base: (*byte)(unsafe.Pointer(&dataSize)), Len: uint64(unsafe.Sizeof(dataSize))},
-		{Base: (*byte)(unsafe.Pointer(&data2Size)), Len: uint64(unsafe.Sizeof(data2Size))},
-		{Base: (*byte)(unsafe.Pointer(&d1[0])), Len: uint64(dataSize)},
-		{Base: (*byte)(unsafe.Pointer(&d2[0])), Len: uint64(data2Size)},
+	v := [][]byte{
+		(*[4]byte)(unsafe.Pointer(&t))[:],
+		(*[4]byte)(unsafe.Pointer(&dataSize))[:],
+		(*[4]byte)(unsafe.Pointer(&data2Size))[:],
+		[]byte(data),
+		[]byte(d2),
 	}
 
 	f, err := c.File()
@@ -49,35 +68,30 @@ func sendRequest(conn net.Conn, t requestType, data string) (string, error) {
 	}
 	defer f.Close()
 
-	if _, err := vectorio.WritevRaw(f.Fd(), v); err != nil {
+	writer := net.Buffers(v)
+	if _, err := writer.WriteTo(c); err != nil {
 		return "", fmt.Errorf("failed to write to mcstransd: %w", err)
 	}
 
 	var uintsize uint32
-	elemsize := uint64(unsafe.Sizeof(uintsize))
 
-	header := []syscall.Iovec{
-		{Len: elemsize}, // function
-		{Len: elemsize}, // response length
-		{Len: elemsize}, // return value
-	}
-
-	if _, err := vectorio.ReadvRaw(f.Fd(), header); err != nil {
+	var hdr [unsafe.Sizeof(uintsize) * 3]byte
+	_, err = c.Read(hdr[0:])
+	if err != nil {
 		return "", fmt.Errorf("failed to read from mcstransd: %w", err)
 	}
 
-	respvec := []syscall.Iovec{{Len: uint64(*header[1].Base)}}
-	_, err = vectorio.ReadvRaw(f.Fd(), respvec)
+	//function := nativeEndian.Uint32(hdr[0:4]) // unused
+	responselen := nativeEndian.Uint32(hdr[4:8])
+	//returncode := nativeEndian.Uint32(hdr[8:12]) // unused
+
+	response := make([]byte, responselen)
+	_, err = c.Read(response[0:])
 	if err != nil {
-		return "", fmt.Errorf("failed to read from response: %w", err)
+		return "", fmt.Errorf("failed to read from mcstransd: %w", err)
 	}
 
-	b := *(*[]byte)(unsafe.Pointer(&respvec[0].Base))
-	if len(b) <= len(nullChar) {
-		return "", fmt.Errorf("failed to read from response")
-	}
-
-	str := strings.Trim(string(b), nullChar)
+	str := strings.Trim(string(response), nullChar)
 	return strings.TrimSpace(str), nil
 }
 
@@ -107,6 +121,8 @@ func new() (*Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial mcstransd: %w", err)
 	}
+
+	setNativeEndian()
 
 	return &Conn{
 		conn:       conn,
