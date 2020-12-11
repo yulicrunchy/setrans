@@ -61,8 +61,10 @@ func TestTranslation(t *testing.T) {
 		defer conn.Close()
 
 		for _, tt := range tests {
-			got, err := conn.TransToRaw(tt.orig)
-			check(t, err, tt.err, got, tt.want)
+			t.Run(tt.name, func(t *testing.T) {
+				got, err := conn.TransToRaw(tt.orig)
+				check(t, err, tt.err, got, tt.want)
+			})
 		}
 	})
 
@@ -84,8 +86,10 @@ func TestTranslation(t *testing.T) {
 		defer conn.Close()
 
 		for _, tt := range tests {
-			got, err := conn.RawToColor(tt.orig)
-			check(t, err, tt.err, got, tt.want)
+			t.Run(tt.name, func(t *testing.T) {
+				got, err := conn.RawToColor(tt.orig)
+				check(t, err, tt.err, got, tt.want)
+			})
 		}
 	})
 
@@ -112,8 +116,10 @@ func TestTranslation(t *testing.T) {
 		defer conn.Close()
 
 		for _, tt := range tests {
-			got, err := conn.RawToTrans(tt.orig)
-			check(t, err, tt.err, got, tt.want)
+			t.Run(tt.name, func(t *testing.T) {
+				got, err := conn.RawToTrans(tt.orig)
+				check(t, err, tt.err, got, tt.want)
+			})
 		}
 	})
 }

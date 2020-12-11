@@ -34,7 +34,7 @@ func getNativeEndian() (binary.ByteOrder, error) {
 	case [2]byte{0xAB, 0xCD}:
 		return binary.BigEndian, nil
 	default:
-		return nil, fmt.Errorf("Could not determine native endianness.")
+		return nil, fmt.Errorf("could not determine native endianness")
 	}
 }
 
