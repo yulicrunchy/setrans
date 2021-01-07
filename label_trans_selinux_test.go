@@ -4,6 +4,7 @@ package setrans
 
 import (
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -28,6 +29,12 @@ func check(t *testing.T, err error, wanterr, got, want string) {
 // These tests require an MLS policy and will not work with the default
 // Redhat targeted policy
 func TestTranslation(t *testing.T) {
+	conn, err := New()
+	if err != nil {
+		t.Fatalf("failed to connect to mcstrans: %q", err)
+	}
+	defer conn.Close()
+
 	t.Run("Test TransToRaw", func(t *testing.T) {
 		tests := []struct {
 			orig, want, err, name string
@@ -54,18 +61,22 @@ func TestTranslation(t *testing.T) {
 			},
 		}
 
-		conn, err := New()
-		if err != nil {
-			t.Fatalf("failed to connect to mcstrans: %q", err)
-		}
-		defer conn.Close()
+		var wg sync.WaitGroup
 
-		for _, tt := range tests {
-			t.Run(tt.name, func(t *testing.T) {
-				got, err := conn.TransToRaw(tt.orig)
-				check(t, err, tt.err, got, tt.want)
-			})
+		for i := 0; i < 1000; i++ {
+			wg.Add(1)
+
+			go func() {
+				defer wg.Done()
+				for _, tt := range tests {
+					t.Run(tt.name, func(t *testing.T) {
+						got, err := conn.TransToRaw(tt.orig)
+						check(t, err, tt.err, got, tt.want)
+					})
+				}
+			}()
 		}
+		wg.Wait()
 	})
 
 	t.Run("Test RawToColor", func(t *testing.T) {

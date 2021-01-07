@@ -90,6 +90,9 @@ func (c *Conn) sendRequest(t requestType, data string) (string, error) {
 }
 
 func (c *Conn) makeRequest(con string, t requestType) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	go func(msg setransMsg) {
 		response, err := c.sendRequest(msg.reqType, msg.label)
 		if err != nil {
