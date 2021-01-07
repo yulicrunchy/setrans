@@ -15,18 +15,11 @@ const (
 	reqRawToColor requestType = 4
 )
 
-type setransMsg struct {
-	label   string
-	reqType requestType
-}
-
 // Conn is used to keep an setrans connection open to the
 // mcstrans socket
 type Conn struct {
 	mu           sync.RWMutex
 	conn         net.Conn
-	mcstransch   chan setransMsg
-	errch        chan error
 	nativeEndian binary.ByteOrder
 }
 

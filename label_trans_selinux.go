@@ -89,24 +89,16 @@ func (c *Conn) sendRequest(t requestType, data string) (string, error) {
 	return strings.TrimSpace(str), nil
 }
 
-func (c *Conn) makeRequest(con string, t requestType) (string, error) {
+func (c *Conn) makeRequest(label string, t requestType) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	go func(msg setransMsg) {
-		response, err := c.sendRequest(msg.reqType, msg.label)
-		if err != nil {
-			c.errch <- fmt.Errorf("failed to send initial request %v: %w", msg, err)
-		}
-		c.mcstransch <- setransMsg{label: response}
-	}(setransMsg{reqType: t, label: con})
-
-	select {
-	case err := <-c.errch:
-		return "", err
-	case req := <-c.mcstransch:
-		return req.label, nil
+	response, err := c.sendRequest(t, label)
+	if err != nil {
+		return "", fmt.Errorf("failed to send initial request: %v: for label: %s: %w", t, label, err)
 	}
+
+	return response, nil
 }
 
 func new() (*Conn, error) {
@@ -126,8 +118,6 @@ func new() (*Conn, error) {
 
 	return &Conn{
 		conn:         conn,
-		mcstransch:   make(chan setransMsg),
-		errch:        make(chan error),
 		nativeEndian: ne,
 	}, nil
 }
